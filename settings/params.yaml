@@ -1,0 +1,20 @@
+# YAML settings for the model parameters
+params: &PARAMS
+  batch_size: 1024
+  num_epochs: 500
+  optimizer: AdamOptimizer
+  objective: softmax_cross_entropy_with_logits_v2
+  learning_rate: 1.0e-3
+  regularization: 1.0e-3
+  visible_devices: 1
+  # datasets: [circles, cifar10, mnist, fashion_mnist]
+  datasets: [swiss_roll]
+  inputs: [3]
+  outputs: [2]
+  # networks: [vanilla, l2, scatter_weights, scatter_embedding, convnet]
+  networks: [scatter_embedding]
+  num_layers: 3
+  num_hidden: [512, 256, 128]
+  temperature_constant: 1.5
+  pool_size: [2, 2]
+  kernel_size: [3, 3]
