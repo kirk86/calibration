@@ -192,7 +192,8 @@ def reliability_diagram(netobj, logits, labels, n_bins=15, scaled=False):
         logits=tf.Variable(logits)
         if isinstance(logits, np.ndarray) else logits,
         labels=tf.Variable(labels)
-        if isinstance(labels, np.ndarray) else labels)
+        if isinstance(labels, np.ndarray) else labels
+    )
 
     textstr = '$\mathrm{ece}=%.2f$' % (ece)
     print("computed ece from reliability plot: {}".format(ece))

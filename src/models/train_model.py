@@ -3,20 +3,15 @@ import sacred
 import datetime
 import numpy as np
 import tensorflow as tf
-# from tensorflow.python.framework import ops
-from tensorflow.python.client import device_lib
-from src.visualization import visualize as plot
-# from tensorflow.examples.tutorials.mnist import input_data
-# from utils.data_loader import read_data_sets
 from utils.loader import data_loader
 from utils.rprop import RPropOptimizer
+from tensorflow.python.client import device_lib
+from src.visualization import visualize as plot
 
 sacredIngredients = sacred.Ingredient('default_params')
 
 sacredIngredients.add_config('./settings/config.yaml')
 sacredIngredients.add_config('./settings/params.yaml')
-
-# tfe = tf.enable_eager_execution()
 
 
 def get_available_gpus():
@@ -64,7 +59,7 @@ class NeuralNetwork(object):
         self.data = data_loader(
             self.dataset,
             params['outputs'],
-            reshape=True if self.network_type != "convnet" else False
+            reshape=True if self.network_type != "lenet" else False
         )
         self.batch_id = 0
         self.epochs = params['num_epochs']
@@ -81,7 +76,8 @@ class NeuralNetwork(object):
         # logging setup                                            #
         ############################################################
         time_string = datetime.datetime.now().isoformat()
-        os.environ['CUDA_VISIBLE_DEVICES'] = str(params['visible_devices'])
+        if get_available_gpus():
+            os.environ['CUDA_VISIBLE_DEVICES'] = str(params['visible_devices'])
         self.logs = os.path.join(self.work_dir, self.log_dir)
         self.models = os.path.join(self.work_dir, self.model_dir)
         experiment_name = f"{self.dataset}/{self.network_type}/{self.epochs}_epochs_{time_string}"
@@ -121,11 +117,11 @@ class NeuralNetwork(object):
         )
         # Next: optimize the temperature w.r.t. NLL
         self.temperature_optimizer = tf.contrib.opt.ScipyOptimizerInterface(
-            self.temperature, method='L-BFGS-B', options={'maxiter': 100})
+            self.temperature, method='L-BFGS-B', options={'maxiter': 50})
 
         # with tf.Graph().as_default():
         with tf.variable_scope(self.network_type, reuse=False):
-            if self.network_type == 'convnet':
+            if self.network_type == 'lenet':
                 from src.models.convnet import lenet
                 kernel_size = params['kernel_size']
                 pool_size = params['pool_size']
@@ -204,19 +200,19 @@ class NeuralNetwork(object):
                         if layer == self.num_layers else modules[layer]
                     )
 
-        if self.network_type == "vanilla":
+        if self.network_type == "mlp":
             loss = self.objective(
                 labels=labels, logits=modules[-1], name='softmax_v2'
             )
             reg = tf.constant(0.0)
 
-        if self.network_type == "l2":
+        if self.network_type == "mlp_l2":
             reg = tf.nn.l2_loss(W[-2]) * self.regularization
             loss = self.objective(
                 labels=labels, logits=modules[-1], name='softmax_v2'
             ) + reg
 
-        if self.network_type == "scatter_weights":
+        if self.network_type == "mlp_reg_weights":
             W_shape = W[-2].shape.as_list()  # 256x2
             scaling_factor = tf.constant(1.) / W_shape[0]
             C = tf.eye(W_shape[0]) - scaling_factor * tf.ones(
@@ -227,7 +223,7 @@ class NeuralNetwork(object):
                 labels=labels, logits=modules[-1], name='softmax_v2'
             ) + reg
 
-        if self.network_type == "scatter_embedding":
+        if self.network_type == "mlp_reg":
             # l2_shape = l2.shape.as_list()  # 64x2
             scaling_factor = tf.constant(1.) / self.batch_size
             C = tf.eye(self.batch_size) - (scaling_factor * tf.ones(
@@ -266,7 +262,7 @@ class NeuralNetwork(object):
         tf.summary.scalar('cross_entropy_objective', loss)
         tf.summary.scalar("accuracy", accuracy)
         tf.summary.scalar("error", error)
-        if not self.network_type == "vanilla":
+        if not self.network_type == "mlp":
             tf.summary.scalar("regularization_value", reg)
         logits = modules[-1]
         probab = tf.nn.softmax(modules[-1])
@@ -432,7 +428,6 @@ class NeuralNetwork(object):
         batch_loss = []
         batch_error = []
         batch_reg = []
-        # this for loop is equivalent to one epoch, going through all data
         n_batches = n_samples // self.batch_size
         for mbatch in range(n_batches):
             if mode == 'valid' or mode == 'test':
@@ -452,7 +447,7 @@ class NeuralNetwork(object):
                 ]
 
             test_data = np.c_[X.reshape(-1, np.prod(X.shape[1:])), Y]
-            # np.random.shuffle(test_data)
+
             logts, acc, loss, error, reg  = self.sess.run(
                 [
                     self.logits,
@@ -502,20 +497,20 @@ class NeuralNetwork(object):
 
     def ece_loss(self, logits, labels, n_bins=15):
         """
-        Calculates the Expected Calibration Error of a model.
-        (This isn't necessary for temperature scaling, just a cool metric).
-        The input to this loss is the logits of a model, NOT the softmax scores.
-        This divides the confidence outputs into equally-sized interval bins.
-        In each bin, we compute the confidence gap:
-        bin_gap = | avg_confidence_in_bin - accuracy_in_bin |
-        We then return a weighted average of the gaps, based on the number
-        of samples in each bin
-        See: Naeini, Mahdi Pakdaman, Gregory F. Cooper, and Milos Hauskrecht.
-        "Obtaining Well Calibrated Probabilities Using Bayesian Binning." AAAI.
-        2015.
+        Calculates the Expected Calibration Error of a model.  (This
+        isn't necessary for temperature scaling, just a cool metric).
+        The input to this loss is the logits of a model, NOT the
+        softmax scores.  This divides the confidence outputs into
+        equally-sized interval bins.  In each bin, we compute the
+        confidence gap: bin_gap = | avg_confidence_in_bin -
+        accuracy_in_bin | We then return a weighted average of the
+        gaps, based on the number of samples in each bin
+        See: Naeini, Mahdi Pakdaman, Gregory F. Cooper, and Milos
+        Hauskrecht.  "Obtaining Well Calibrated Probabilities Using
+        Bayesian Binning." AAAI.  2015.
         n_bins (int): number of confidence interval bins
         """
-        bin_boundaries = tf.linspace(0.0, 1.0, n_bins + 1)
+        bin_boundaries = np.linspace(0.0, 1.0, n_bins + 1)
         bin_lowers = bin_boundaries[:-1]
         bin_uppers = bin_boundaries[1:]
 
@@ -528,47 +523,45 @@ class NeuralNetwork(object):
             tf.argmax(labels, axis=1)
             if len(labels.shape.as_list()) >= 2 else labels)
 
-        ece = tf.zeros(shape=[1], dtype=tf.float32)
-        try:
-            if bin_lowers.shape.as_list()[0] != bin_uppers.shape.as_list()[0]:
-                raise ValueError(
-                    "Shape mismatch bin indices bin_lowers and bin_uppers")
-            else:
-                num_elems = bin_lowers.shape.as_list()[0]
-        except ValueError as e:
-            print(e)
-            return -1
+        def zero_val():
+            return tf.constant(0.0)
 
-        # for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
-        # Calculated |confidence - accuracy| in each bin
-        for bin_idx in range(num_elems):
+        def calc_ece(prop_in_bin, in_bin):
+            ece = tf.zeros(shape=[1], dtype=tf.float32)
+            mask_accuracies = tf.boolean_mask(accuracies, in_bin)
+            accuracy_in_bin = tf.reduce_mean(
+                    tf.cast(mask_accuracies, tf.float32)
+            )
+            mask_confidences = tf.boolean_mask(confidences, in_bin)
+            avg_confidence_in_bin = tf.reduce_mean(
+                tf.cast(mask_confidences, tf.float32)
+            )
+            ece += tf.abs(avg_confidence_in_bin - accuracy_in_bin) \
+                * prop_in_bin
+            return ece
+
+        for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+            # Calculated |confidence - accuracy| in each bin
             in_bin = tf.logical_and(
-                tf.greater(confidences, bin_lowers[bin_idx]),
-                tf.less_equal(confidences, bin_uppers[bin_idx]))
+                tf.greater(confidences, bin_lower),
+                tf.less_equal(confidences, bin_upper)
+            )
 
             prop_in_bin = tf.reduce_mean(tf.cast(in_bin, tf.float32))
 
-            mask_accuracies = tf.boolean_mask(accuracies, in_bin)
-            accuracy_in_bin = tf.cond(
-                tf.equal(tf.size(mask_accuracies),
-                         0), lambda: tf.zeros(shape=[1], dtype=tf.float32),
-                lambda: tf.reduce_mean(tf.cast(mask_accuracies, tf.float32)))
-
-            mask_confidences = tf.boolean_mask(confidences, in_bin)
-            avg_confidence_in_bin = tf.cond(
-                tf.equal(tf.size(mask_confidences),
-                         0), lambda: tf.zeros(shape=[1], dtype=tf.float32),
-                lambda: tf.reduce_mean(tf.cast(mask_confidences, tf.float32)))
-            ece += tf.abs(avg_confidence_in_bin -
-                          accuracy_in_bin) * prop_in_bin
+            ece = tf.cond(
+                tf.greater(prop_in_bin, 0),
+                lambda: calc_ece(prop_in_bin, in_bin),
+                lambda: zero_val()
+            )
 
         self.sess.run(tf.global_variables_initializer())
         return self.sess.run(ece)[0]
 
     def temperature_scale(self, logits):
         """
-        NB: Output of the neural network should be the classification logits,
-            NOT the softmax (or log softmax)!
+        NB: Output of the neural network should be the classification
+        logits, NOT the softmax (or log softmax)!
         Perform temperature scaling on logits
         """
         return logits / self.temperature
@@ -588,7 +581,8 @@ class NeuralNetwork(object):
         # Calculate NLL and ECE before temperature scaling
         before_temperature_nll = tf.reduce_mean(
             tf.nn.sparse_softmax_cross_entropy_with_logits(
-                labels=labels, logits=logits))
+                labels=labels, logits=logits)
+        )
         # output is scalar value and not tf symbolic variable
         before_temperature_ece = self.ece_loss(logits=logits, labels=labels)
         print('Before temperature - NLL: %.3f, ECE: %.3f' %
@@ -631,41 +625,3 @@ class NeuralNetwork(object):
         self.net['calibration']['after']['ECE'].append(after_temperature_ece)
 
         return self.temperature_scale(logits), labels
-
-
-# if __name__ == "__main__":
-#     if tf.gfile.Exists('./logs'):
-#         tf.gfile.DeleteRecursively('./logs')
-#     tf.gfile.MakeDirs('./logs/train/')
-#     tf.gfile.MakeDirs('./logs/valid/')
-#     tf.gfile.MakeDirs('./logs/test/')
-#     nets = []
-#     mnist = input_data.read_data_sets("MNIST_data", one_hot=True)
-#     ################################################################
-#     # run resnet                                                   #
-#     ################################################################
-#     # nn = NeuralNetwork(mnist, 'resnet', epochs=10, batch_size=64)
-#     # trX = mnist.train.images.reshape(-1, 28, 28, 1)
-#     # trY = mnist.train.labels
-#     # valX = mnist.validation.images.reshape(-1, 28, 28, 1)
-#     # valY = mnist.validation.labels
-#     # history = nn.resnet_model.fit(
-#     #     trX,
-#     #     trY,
-#     #     batch_size=64,
-#     #     epochs=nn.epochs,
-#     #     validation_data=(valX, valY),
-#     #     shuffle=True
-#     # )
-#     # val_logits = nn.resnet_model.predict(valX)
-#     # nn.set_temperature(logits=val_logits, labels=valY)
-#     # ------------------------------------------------------------
-#     for net in [
-#             "network_scatter_embedding", "network_vanilla", "network_l2",
-#             "network_scatter_weights"
-#     ]:
-#         nn = NeuralNetwork(mnist, net, epochs=5, batch_size=64)
-#         epochs, network = nn.train()
-#         nets.append(network)
-#     with open(f"./logs/{nn.dataset}_nets_logs.pickle", "wb") as fh:
-#         pickle.dump(nets, fh)
