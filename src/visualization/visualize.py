@@ -1,6 +1,7 @@
 import os
 import pickle
 import numpy as np
+import pandas as pd
 import tensorflow as tf
 import matplotlib.pyplot as plt
 from utils.parameter import AppConfig
@@ -83,10 +84,10 @@ def reliability_diagram(netobj, logits, labels, n_bins=15, scaled=False):
     outputs from the final linear layer - not the softmaxes
     labels - a tensorflow tensor (size n) with the labels
     """
-    logits = netobj.sess.run(logits) if isinstance(logits, tf.tensor) \
-        else logits
-    labels = netobj.sess.run(labels) if isinstance(labels, tf.tensor) \
-        else labels
+    logits = netobj.sess.run(logits) \
+        if tf.contrib.framework.is_tensor(logits) else logits
+    labels = netobj.sess.run(labels) \
+        if tf.contrib.framework.is_tensor(labels) else labels
     labels = labels.argmax(axis=1) if len(labels.shape) >= 2  \
         else labels
     softmaxes = softmax(logits)
@@ -117,47 +118,80 @@ def reliability_diagram(netobj, logits, labels, n_bins=15, scaled=False):
     eces = []
     correct_samples_in_bin = []
     total_samples_in_bin = []
-    # for bin_lower, bin_upper in zip(bins[:-1], bins[1:]):
-    #     print("lower: ", bin_lower, " <-> ", "upper: ", bin_upper)
-    bin_indices = [
-        np.greater_equal(confidences, bin_lower) * np.less(
+    for bin_lower, bin_upper in zip(bin_lowers, bin_uppers):
+        print("lower: ", bin_lower, " <-> ", "upper: ", bin_upper)
+        # calculated |confidence - accuracy| in each bin
+        actual_bins.append(bin_upper)
+        in_bin = np.greater(confidences, bin_lower) * np.less_equal(
             confidences, bin_upper)
-        for bin_lower, bin_upper in zip(bins[:-1], bins[1:])
-    ]
+        prop_in_bin = in_bin.mean()
+        prop_in_bins.append(prop_in_bin)
+        print("in bin {} -> prop_in_bin {}".format(in_bin.sum(), prop_in_bin))
 
-    bin_correct_preds = [
-        np.mean(accuracies[bin_index])
-        if accuracies[bin_index].size != 0 else 1e-3
-        for bin_index in bin_indices
-    ]
+        if prop_in_bin > 0:
+            # correct predictions in each bin
+            accuracy_in_bin = accuracies[in_bin].mean()
+            print("Correct predictions in bin {}/{}".format(accuracies[in_bin].sum(), in_bin.sum()))
+            # probability of correct pred. in each bin
+            avg_conf_in_bin = confidences[in_bin].mean()
+            ece += np.abs(avg_conf_in_bin - accuracy_in_bin) * prop_in_bin
+            bin_correct_preds.append(accuracy_in_bin)
+            bin_conf_scores.append(avg_conf_in_bin)
+            gap_error.append(
+                np.abs(avg_conf_in_bin - accuracy_in_bin)
+            )
+            eces.append(ece)
+            correct_samples_in_bin.append(accuracies[in_bin].sum())
+            total_samples_in_bin.append(in_bin.sum())
+        else:
+            bin_correct_preds.append(0.0)
+            bin_conf_scores.append(0.0)
+            gap_error.append(0.0)
+            eces.append(0.0)
+            correct_samples_in_bin.append(0.0)
+            total_samples_in_bin.append(0.0)
 
-    bin_conf_scores = [
-        np.mean(confidences[bin_index])
-        if confidences[bin_index].size != 0 else 1e-3
-        for bin_index in bin_indices
-    ]
+    df_probs = pd.DataFrame(
+        np.c_[confidences, pred_labels, labels, accuracies.astype(int)],
+        columns=['Probabilies_Confidences', 'Predicted_Labels',
+                 'True_Labels', 'Correct_Prediction'])
 
-    print("correct pred. across each bin {}\n"
-          "confidence score for each bin {}".format(
-              bin_correct_preds, bin_conf_scores))
-    confs = ax[1].bar(bins[:-1], bin_correct_preds, width=width)
+    df_bins = pd.DataFrame(
+        np.c_[actual_bins, prop_in_bins, correct_samples_in_bin,
+              total_samples_in_bin, bin_conf_scores,
+              bin_correct_preds, gap_error, eces],
+        columns=['bins', 'proportion_of_samples_in_bin',
+                 'correct_samples_in_bin', 'total_samples_in_bin',
+                 'avg_conf_probs', 'avg_acc_correct_preds',
+                 'gap_abs_diff_conf_acc', 'ece'])
+
+    print("accuracy_in_bin {}\n"
+          "avg_conf_in_bin {}".format(bin_correct_preds, bin_conf_scores)
+          )
+
+    confs = ax[1].bar(true_bins, bin_correct_preds, width=width)
     gaps = ax[1].bar(
-        bins[:-1],
-        np.array(bin_conf_scores) - np.array(bin_correct_preds),
+        true_bins,
+        gap_error,
         bottom=bin_correct_preds,
         color=[1, 0.7, 0.7],
         alpha=0.5,
         width=width,
         hatch='//',
-        edgecolor='r')
+        edgecolor='r'
+    )
     ax[1].plot([0, 1], [0, 1], '--', color='gray')
     ax[1].legend(
-        [confs, gaps], ['outputs', 'gap'], loc='best', fontsize='small')
+        [confs, gaps],
+        ['outputs', 'gap'],
+        loc='best',
+        fontsize='small'
+    )
 
     ece = netobj.ece_loss(
-        logits=tf.variable(logits)
+        logits=tf.Variable(logits)
         if isinstance(logits, np.ndarray) else logits,
-        labels=tf.variable(labels)
+        labels=tf.Variable(labels)
         if isinstance(labels, np.ndarray) else labels)
 
     textstr = '$\mathrm{ece}=%.2f$' % (ece)
@@ -170,11 +204,13 @@ def reliability_diagram(netobj, logits, labels, n_bins=15, scaled=False):
         0.4,
         0.1,
         textstr,
-        transform=ax[1].transaxes,
+        transform=ax[1].transAxes,
         fontsize=14,
         verticalalignment='top',
         bbox=props)
 
+    ax[1].set_xlim(0, 1.033)
+    ax[1].set_ylim(0, 1)
     # clean up
     ax[1].set_ylabel('accuracy')
     ax[1].set_xlabel('confidence')
@@ -182,11 +218,12 @@ def reliability_diagram(netobj, logits, labels, n_bins=15, scaled=False):
     dataset = netobj.run.config['default_params']['params']['datasets']
     plt.suptitle(algoname + '_calibrated' if scaled else algoname)
 
-    fname = "{}/{}/{}/reliab_calib".format(
-        fig_dir, dataset, algoname
-    ) if scaled else "{}/{}/{}/reliab".format(
-        fig_dir, dataset, algoname
-        )
+    fname = "{}/{}/{}/reliab_calib".format(fig_dir, dataset, algoname) \
+        if scaled else "{}/{}/{}/reliab".format(fig_dir,
+                                                dataset,
+                                                algoname)
+    df_probs.to_csv(fname + '_df_probs.csv')
+    df_bins.to_csv(fname + '_df_bins.csv')
     # fig.savefig(fname)
     plt.savefig(fname)
     with open(fname + ".pickle", "wb") as fp:

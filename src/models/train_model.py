@@ -363,7 +363,7 @@ class NeuralNetwork(object):
             if self.net['valid']['loss'][epoch] < self.best_valid_loss:
                 self.best_valid_loss = self.net['valid']['loss'][epoch]
                 dirname = f"{self.models}/{self.dataset}/{self.network_type}"
-                fname = f"/epoch_{epoch}_loss_{loss}"
+                fname = f"/epoch_{epoch}_loss_{self.best_valid_loss}"
                 if not os.path.exists(dirname):
                     os.makedirs(dirname + fname)
                 # self.saver.save(
