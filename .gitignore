@@ -98,3 +98,5 @@ testnet
 testpytorch*
 testslice*
 notebooks/
+src/data/
+src/features/
