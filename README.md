@@ -1,5 +1,5 @@
 # calibration
-Calibration of neural networks on simple test models in TensorFlow
+Calibration of neural networks on simple MLP models in TensorFlow using [temperature scaling](https://github.com/gpleiss/temperature_scaling)
 
 ![](reports/figures/mnist/mlp/newplot.png)
 ![](reports/figures/mnist/mlp/reliab.png)
